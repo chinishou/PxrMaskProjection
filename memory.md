@@ -211,25 +211,69 @@ a rescan.
 ## Ray generation
 
 ```cpp
-direction = normalize(sx, sy, 1.0f)
+// fov is an input param; focalScale is derived once in RenderBegin.
+float half_narrow = min(half_sw_width, half_sw_height);
+focalScale = half_narrow / tan(fov/2);
+
+// Per ray in Project():
+direction = normalize(sx, sy, focalScale);
 ```
 
-hdPrman sets `screenWindow{Left,Right,Top,Bottom}` from the scene
-camera's aperture and focal length so that
-`swT = tan(camera_fov_vertical / 2)`. This is the standard "unit
-focal plane" convention: screen-space coordinates already are
-camera-space coordinates at Z=1.
+### Why `fov` is a required parameter
 
-Therefore `normalize(sx, sy, 1.0)` is unconditionally correct — no
-user-supplied FOV parameter is needed. The plugin is a full camera
-replacement that inherits the host camera's perspective via the
-screen window.
+At one point this was coded as `direction = normalize(sx, sy, 1.0)`
+on the theory that hdPrman's `screenWindow` already encodes
+`swT = tan(fov/2)`, which would make `dz=1` always correct.
 
-**Earlier trap (now fixed):** a `fov` parameter was added after the
-plugin appeared to produce the wrong FOV for a tilted camera. In
-reality the symptom was caused by the same bug (before the screen
-window was read correctly). `direction = normalize(sx, sy, 1.0)` was
-always the right formula; the `fov` workaround has been removed.
+**Tested empirically. It doesn't work.** With `dz=1.0` the
+`impliedFOV` log line reports a value unrelated to the Houdini
+camera (typically ~90–105° regardless of the scene camera), the
+ground plane clips badly on tilted cameras (cam1), and the masked
+region drifts as the camera moves.
+
+The practical takeaway is that `screen[]` samples reaching the
+projection don't carry the camera FOV in a form you can use without
+knowing the FOV independently. So `fov` is kept as an explicit
+parameter, matching `PxrPerspective`'s convention (narrower-dim
+FOV in degrees).
+
+### Auto-deriving `fov` from the render camera (Python side)
+
+The plugin itself has no access to the USD stage — `RixProjection`
+runs inside the render process with only the `RixProjectionEnvironment`
+(width/height/screenWindow/clip/worldToCam) plus the plugin's own
+param list. But `set_projection.py` runs in Houdini with full
+stage access, so it:
+
+1. Resolves the render camera via
+   `UsdRenderSettings(rs_prim).GetCameraRel().GetTargets()[0]`.
+2. Reads `focalLength`, `horizontalAperture`, `verticalAperture`
+   off that `UsdGeomCamera` prim.
+3. Computes
+   `fov = 2 · atan( min(hAp, vAp) / 2 / focal )` in degrees.
+4. Writes the result to `ri:projection:PxrMaskProjection:fov`.
+
+Sanity check: Houdini's default aperture is 20.955 × 15.2908 mm
+with focal 50 mm → `fov = 2·atan(15.2908/2 / 50) = 17.38°`, which
+matches the empirical value the tester found by eye (17.5°). Any
+standard UsdGeomCamera should round-trip through this formula.
+
+`FOV_OVERRIDE` + `CAMERA_PRIM` escape hatches are there for the
+"my camera aperture doesn't match the real sensor" or "I want to
+mask against a different camera" cases.
+
+### Kill, don't tint
+
+Earlier versions also had a "partial" path — if `maskVal` was
+between 0 and 1 (soft edge / feather), the plugin multiplied
+`pCtx.tint[i]` by `maskVal`. Removed: by the time `tint` is
+applied the integrator has already shaded the sample, so tinting
+just darkens fully-paid pixels — it saves no render time, which
+is the whole reason this plugin exists.
+
+Current behaviour is strictly binary: `maskVal <= 0` → kill the ray
+(`direction = 0`). `> 0` → keep at full strength. `threshold` +
+`softEdge` reposition the cutoff but the resulting edge is sharp.
 
 ---
 
@@ -330,13 +374,57 @@ with "being used by another process".
 12. Render scaled with camera distance (classic FOV mismatch).
     Instrumented Project() to print real screen sample range and
     implied FOV — confirmed 105° vs Houdini's ~26°. Added `fov`
-    param as a workaround (later removed — see below).
-13. Realised `direction = normalize(sx, sy, 1.0)` is unconditionally
-    correct because hdPrman encodes the camera FOV in the screenWindow
-    (swT = tan(fov/2)). Removed the `fov` parameter entirely.
-14. Cleaned up file layout and wrote `README.md` for public
+    param, derived `focalScale = half_sw / tan(fov/2)`, and used
+    it as `dz` in `normalize(sx, sy, dz)`. FOV=50 matched the
+    tester's camera and rendered correctly.
+13. Briefly theorised that `dz=1.0` should work unconditionally
+    (screenWindow already encodes `tan(fov/2)`) and removed the
+    `fov` parameter. Re-tested: broken — tilted camera clipped,
+    implied FOV was wrong again. Rolled back; `fov` stays as a
+    required user-supplied parameter.
+14. Removed the "partial mask tints the beauty" path. Tinting
+    happens after shading, so it can't save render time, which is
+    the whole point of this plugin. Mask is now strictly binary:
+    `maskVal <= 0` kills the ray, `> 0` keeps it at full strength.
+15. Bug report: the masked render's composition didn't match a
+    bypassed render of the same camera — mask shape was correct
+    but the geometry inside appeared zoomed-out. Two causes:
+    (a) `fov` parameter was being interpreted as "50 mm focal
+        length" by the tester, but the parameter is FOV in
+        degrees. README now calls this out explicitly.
+    (b) Killed rays left the output pixel at hdPrman's default
+        background color (flat gray), not black. `direction=0`
+        tells the integrator to SKIP the ray — it never writes
+        to the output pixel at all, so `tint=0` alone has no
+        effect (it's never applied). Fix: give the ray a valid
+        non-zero direction but `maxDist=0` — the integrator
+        walks the "miss" path and writes the pixel, which we
+        then force to black via `tint=0`. A few cycles per
+        killed ray, far cheaper than full shading.
+16. hdPrman's `screenWindow` is NOT plain `tan(fov/2)`. On a
+    verified 17.5°-vertical camera we saw `screenWindow.top=0.730`
+    — that would imply 72° under the standard convention. The
+    scale factor (~4.74× for this camera) turns out to equal the
+    `focalScale` the plugin derives from the user's `fov` input,
+    i.e. `half_sw = focalScale · tan(fov/2)`. What that factor
+    actually is (aperture-to-near-clip ratio? some Houdini-
+    specific unit conversion?) remains unknown — and the
+    `RixProjectionEnvironment` we get doesn't expose enough to
+    back it out. So the plugin can't auto-derive `fov` from
+    `screenWindow` alone.
+17. Moved FOV auto-derivation into `set_projection.py`. The
+    plugin side can't read USD, but the Houdini-side Python
+    script can — so the script resolves the render camera via
+    `UsdRenderSettings.GetCameraRel()`, reads
+    `focalLength` + `horizontalAperture`/`verticalAperture`, and
+    computes the narrower-dim FOV exactly the way
+    `PxrPerspective` expects. Verified: Houdini default aperture
+    20.955 × 15.2908 mm + focal 50 mm → 17.38°, matching the
+    tester's empirical 17.5°. `FOV_OVERRIDE` and `CAMERA_PRIM`
+    are kept as escape hatches but the common case is zero-config.
+18. Cleaned up file layout and wrote `README.md` for public
     release.
-15. Un-vendored the thirdparty single-headers — added
+19. Un-vendored the thirdparty single-headers — added
     `fetch_thirdparty.sh` / `.bat` so a clone stays tiny and
     license-clean, with the caveat that miniz's amalgamated form
     only exists in the GitHub release zip (the tag has split

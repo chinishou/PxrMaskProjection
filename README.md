@@ -14,15 +14,23 @@ Tested with:
 (`RixProjection`). For every screen sample hdPrman hands us, the
 plugin:
 
-1. Generates a perspective ray (`direction = normalize((sx, sy, 1.0))`).
-   The RenderMan screen-window coordinates are already in camera-space
-   units at the Z=1 focal plane, so no FOV parameter is needed.
+1. Generates a perspective ray with a user-specified FOV
+   (`direction = normalize((sx, sy, focalScale))`, where
+   `focalScale = half_screenWindow / tan(fov/2)`).
 2. Looks up the corresponding UV in the mask EXR (bilinear).
-3. If the mask value is ≤ 0, zeros the ray direction so the
-   integrator skips it.
-4. If the mask value is between 0 and 1, multiplies the
-   beauty-channel `tint` by that factor — useful for soft edges
-   and partial transparency.
+3. Applies the threshold / soft-edge remap.
+4. If the remapped mask value is ≤ 0, **zeros the ray direction**
+   so the integrator skips it entirely — this is the whole point
+   of the plugin and where the render-time saving comes from.
+   Otherwise the ray is kept at full strength.
+
+> Why no tint / soft-edge multiplier? An earlier version scaled the
+> beauty tint by partial mask values for feathering. That was
+> removed: by the time the tint is applied the integrator has
+> already shaded the sample, so the render cost is already paid —
+> defeating the point. The cutoff is now strictly binary; use
+> `threshold` + `softEdge` to position the edge but expect a hard
+> transition.
 
 The EXR loader uses the bundled [tinyexr](https://github.com/syoyo/tinyexr)
 single-header library, so the plugin does **not** link against
@@ -36,7 +44,8 @@ seen when loading against the DCC's own `OpenEXR_sidefx.dll` /
 - `maskFit`: Stretch / Fill / Fit
 - `centerX`, `centerY`: pan the mask in screen space
 - `invert`: swap black and white
-- `threshold` + `softEdge`: hard cutoff with optional feather
+- `threshold` + `softEdge`: position the binary cutoff (see note above)
+- `fov`: narrower-dimension FOV in degrees, to match the scene camera
 - `debug`: verbose diagnostics in the render log
 
 ## Repository layout
@@ -183,6 +192,12 @@ Camera prim. Easiest way to set it up is via `set_projection.py`:
    MASK_CHANNEL = "R"          # or A, G, B, custom
    MASK_FIT     = 0            # 0=stretch, 1=fill, 2=fit
    DEBUG        = 0            # 1 for verbose render-log output
+
+   # fov is auto-derived from the render camera's focalLength +
+   # aperture (via the rendersettings' `camera` relationship).
+   # Leave both as None for the default behaviour.
+   FOV_OVERRIDE = None         # float in degrees to force a value
+   CAMERA_PRIM  = None         # prim path to override auto-resolve
    ```
 
 4. Render with hdPrman.
@@ -203,6 +218,7 @@ def Scope "Render"
         int    ri:projection:PxrMaskProjection:invert      = 0
         float  ri:projection:PxrMaskProjection:threshold   = 0.0
         float  ri:projection:PxrMaskProjection:softEdge    = 0.0
+        float  ri:projection:PxrMaskProjection:fov         = 50.0
         int    ri:projection:PxrMaskProjection:debug       = 0
     }
 }
@@ -219,8 +235,50 @@ def Scope "Render"
 | `centerY`     | float  | `0.0` | Vertical mask offset, screen-space `[-1, 1]`. |
 | `invert`      | int    | `0` | `1` to invert the mask. |
 | `threshold`   | float  | `0.0` | Mask values ≤ threshold are killed. |
-| `softEdge`    | float  | `0.0` | Feather width above the threshold. |
+| `softEdge`    | float  | `0.0` | Width of the remap window above the threshold. Result is still binary — this just shifts where the hard edge lands. |
+| `fov`         | float  | `90.0` | **Scene-camera FOV along the narrower image dimension, in degrees.** Must match the Houdini camera. `set_projection.py` derives this automatically from the render camera's `focalLength` + aperture — you normally don't set it by hand. |
 | `debug`       | int    | `0` | Verbose render-log output. |
+
+### How `fov` is set
+
+**`fov` is an angle in degrees, not a focal length in millimetres.**
+`PxrMaskProjection` is a full camera plugin — it replaces Houdini's
+perspective projection with its own, so the plugin's FOV has to
+match the scene camera's or the masked render won't line up with
+a plain render (the mask shape is fine, but the geometry inside
+appears zoomed in/out).
+
+`set_projection.py` reads the camera bound to the Render Settings
+prim (via `UsdRenderSettings.camera`) and computes:
+
+```
+narrower_aperture = min(horizontalAperture, verticalAperture)
+fov = 2 · atan( (narrower_aperture / 2) / focalLength )
+```
+
+That matches `PxrPerspective`'s narrower-dim convention. For a
+default Houdini camera (focal 50 mm, aperture 20.955 × 15.2908 mm),
+that gives `fov = 2·atan(15.2908/2 / 50) ≈ 17.4°` for any aspect
+wider than square.
+
+If you need to force a value (e.g. the camera has a non-standard
+aperture the plugin should ignore, or you're driving it from a
+different source), set `FOV_OVERRIDE` in the script:
+
+```python
+FOV_OVERRIDE = 26.0   # skip auto-derivation
+```
+
+Or to derive from a camera other than the one bound to the
+rendersettings prim:
+
+```python
+CAMERA_PRIM = "/cameras/camera2"
+```
+
+Turn on `DEBUG=1` to see the configured `fov`, the derived
+`focalScale`, and the per-axis implied FOV in the render log —
+handy for sanity-checking that the script wrote what you expected.
 
 ## Troubleshooting
 
@@ -241,18 +299,29 @@ or the Houdini terminal). You should see:
 
 ```
 PxrMaskProjection: RenderBegin env 1280x720 screenWindow=...
-PxrMaskProjection: params maskFile='...' channel='...' fit=0 ...
+PxrMaskProjection: params maskFile='...' ... fov=... focalScale=...
 PxrMaskProjection: loaded '...' channel '...' (WxH)
 PxrMaskProjection: mask stats min=... max=... nonZero=.../...
 PxrMaskProjection: Project call, numRays=... screen[0]=(sx,sy)
-PxrMaskProjection: actual screen sample range ... impliedFOV=...x... deg
+PxrMaskProjection: actual screen sample range ... impliedFOV=...x... deg (configured fov=...)
 ```
 
 Common causes:
 
-- **Empty render / wrong perspective** — check that `ri:projection:name`
-  is actually being applied to the render settings prim, not the camera
-  prim. Use `debug=1` and verify `RenderBegin` is being called.
+- **Empty render** — your `fov` is too wide: rays fire above the
+  horizon where there's no geometry. If you're using
+  `set_projection.py`, check the console for a
+  `Derived fov=... deg from /...` line and confirm that path is
+  your intended render camera; otherwise set `FOV_OVERRIDE`.
+- **Mask shape is too narrow / grows with camera distance** —
+  same root cause: FOV mismatch. The script's derivation assumes
+  a standard `UsdGeomCamera` (focal + aperture in the same unit
+  system). A camera with custom `horizontalAperture` /
+  `verticalAperture` that doesn't reflect the real imaging plane
+  will throw the math off — use `FOV_OVERRIDE` in that case.
+- **Wrong perspective entirely** — check that `ri:projection:name`
+  is applied to the render settings prim, not the camera prim.
+  Use `debug=1` and verify `RenderBegin` is being called.
 - **Channel not found** — the log prints a list of available
   channels in the EXR. Pick one that exists.
 - **Plugin loads but hangs** — make sure you built against the

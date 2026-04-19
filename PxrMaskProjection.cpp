@@ -400,18 +400,30 @@ public:
                     maskVal = (maskVal - lo) / (hi - lo);
             }
 
+            // Binary kill. The plugin's goal is to skip shading for masked
+            // pixels, so naively we'd just zero `direction` — but hdPrman
+            // treats a zero-direction ray as "skip" and never writes to the
+            // output pixel, leaving whatever the framebuffer was initialised
+            // to (typically flat gray, not black).
+            //
+            // Workaround: fire a degenerate ray with zero length (maxDist=0)
+            // and a zero tint. The integrator still walks the write path
+            // (so the pixel gets clobbered) but can't hit any geometry,
+            // and the final radiance is multiplied by tint=0 → true black.
+            // Cost is a handful of cycles per killed ray — far cheaper
+            // than full shading, which is what we set out to avoid.
             if (maskVal <= 0.0f)
             {
                 ++killed;
+                // Non-zero direction so hdPrman doesn't short-circuit.
                 r.direction.x = 0.0f;
                 r.direction.y = 0.0f;
-                r.direction.z = 0.0f;
-            }
-            else if (maskVal < 1.0f)
-            {
-                pCtx.tint[i].r *= maskVal;
-                pCtx.tint[i].g *= maskVal;
-                pCtx.tint[i].b *= maskVal;
+                r.direction.z = 1.0f;
+                r.minDist = 0.0f;
+                r.maxDist = 0.0f;   // zero-length → guaranteed miss
+                pCtx.tint[i].r = 0.0f;
+                pCtx.tint[i].g = 0.0f;
+                pCtx.tint[i].b = 0.0f;
             }
         }
 
