@@ -53,12 +53,8 @@
 
   <param name="threshold" label="Threshold" type="float" default="0.0"
          min="0.0" max="1.0" connectable="False">
-    <help>Values at or below this are killed.</help>
-  </param>
-
-  <param name="softEdge" label="Soft Edge" type="float" default="0.0"
-         min="0.0" max="1.0" connectable="False">
-    <help>Feather width above the threshold.</help>
+    <help>Mask values at or below this are killed. Default 0 kills
+    strictly-black pixels; raise to also kill dim regions.</help>
   </param>
 
   <param name="fov" label="Field of View" type="float" default="90.0"

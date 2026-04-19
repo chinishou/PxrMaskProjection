@@ -30,7 +30,6 @@ enum ParamId
     k_centerY,
     k_invert,
     k_threshold,
-    k_softEdge,
     k_fov,
     k_numParams
 };
@@ -72,7 +71,6 @@ public:
             RixSCParamInfo(RtUString("centerY"),     k_RixSCFloat,   k_RixSCInput),
             RixSCParamInfo(RtUString("invert"),      k_RixSCInteger, k_RixSCInput),
             RixSCParamInfo(RtUString("threshold"),   k_RixSCFloat,   k_RixSCInput),
-            RixSCParamInfo(RtUString("softEdge"),    k_RixSCFloat,   k_RixSCInput),
             RixSCParamInfo(RtUString("fov"),         k_RixSCFloat,   k_RixSCInput),
             RixSCParamInfo(RtUString("debug"),       k_RixSCInteger, k_RixSCInput),
             RixSCParamInfo()  // terminator
@@ -106,7 +104,7 @@ public:
         : m_maskFit(0)
         , m_centerX(0.0f), m_centerY(0.0f)
         , m_invert(0)
-        , m_threshold(0.0f), m_softEdge(0.0f)
+        , m_threshold(0.0f)
         , m_fov(90.0f), m_focalScale(1.0f)
         , m_renderAspect(1.0f), m_maskAspect(1.0f)
         , m_maskWidth(0), m_maskHeight(0)
@@ -205,7 +203,6 @@ public:
         readFloat ("centerY",     &m_centerY);
         readInt   ("invert",      &m_invert);
         readFloat ("threshold",   &m_threshold);
-        readFloat ("softEdge",    &m_softEdge);
         m_debug = 0;
         readInt   ("debug",       &m_debug);
 
@@ -249,9 +246,9 @@ public:
             snprintf(buf, sizeof(buf),
                 "PxrMaskProjection: params maskFile='%s' channel='%s' "
                 "fit=%d invert=%d centerX=%.3f centerY=%.3f "
-                "threshold=%.3f softEdge=%.3f fov=%.2f focalScale=%.4f",
+                "threshold=%.3f fov=%.2f focalScale=%.4f",
                 maskFile, maskChannel, m_maskFit, m_invert,
-                m_centerX, m_centerY, m_threshold, m_softEdge,
+                m_centerX, m_centerY, m_threshold,
                 m_fov, m_focalScale);
             msgs->Info(buf);
         }
@@ -388,18 +385,6 @@ public:
             if (m_invert)
                 maskVal = 1.0f - maskVal;
 
-            if (m_threshold > 0.0f || m_softEdge > 0.0f)
-            {
-                float lo = m_threshold;
-                float hi = m_threshold + std::max(m_softEdge, 0.001f);
-                if (maskVal <= lo)
-                    maskVal = 0.0f;
-                else if (maskVal >= hi)
-                    maskVal = 1.0f;
-                else
-                    maskVal = (maskVal - lo) / (hi - lo);
-            }
-
             // Binary kill. The plugin's goal is to skip shading for masked
             // pixels, so naively we'd just zero `direction` — but hdPrman
             // treats a zero-direction ray as "skip" and never writes to the
@@ -412,7 +397,7 @@ public:
             // and the final radiance is multiplied by tint=0 → true black.
             // Cost is a handful of cycles per killed ray — far cheaper
             // than full shading, which is what we set out to avoid.
-            if (maskVal <= 0.0f)
+            if (maskVal <= m_threshold)
             {
                 ++killed;
                 // Non-zero direction so hdPrman doesn't short-circuit.
@@ -443,7 +428,7 @@ private:
     int   m_maskFit;
     float m_centerX, m_centerY;
     int   m_invert;
-    float m_threshold, m_softEdge;
+    float m_threshold;
     float m_fov, m_focalScale;
 
     std::vector<float> m_maskData;

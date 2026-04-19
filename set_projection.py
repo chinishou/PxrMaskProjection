@@ -8,20 +8,14 @@ from pxr import Sdf, UsdGeom, UsdRender
 RENDER_SETTINGS_PRIM = "/Render/rendersettings"
 PROJECTION_NAME      = "PxrMaskProjection"
 
-MASK_FILE    = "D:/dev/PxrMaskProjection/test_mask.exr"   # << set me
+MASK_FILE    = "./PxrMaskProjection/examples/test_mask.exr"
 MASK_CHANNEL = "R"
 MASK_FIT     = 0        # 0=stretch, 1=fill, 2=fit
 CENTER_X     = 0.0
 CENTER_Y     = 0.0
 INVERT       = 0        # 1 to invert
-THRESHOLD    = 0.0
-SOFT_EDGE    = 0.0
+THRESHOLD    = 0.0      # mask values <= this are killed
 DEBUG        = 0        # 1 for verbose render-log diagnostics
-
-# FOV is derived from the render camera's focalLength + aperture.
-# Leave FOV_OVERRIDE = None to auto-compute (recommended).
-# Set a float to force a specific value (degrees, narrower image dim).
-FOV_OVERRIDE = None
 
 # Which camera to read. Leave CAMERA_PRIM = None to auto-resolve from
 # the rendersettings prim's `camera` relationship (UsdRenderSettings).
@@ -45,8 +39,7 @@ def _resolve_camera_prim(stage, rs_prim):
     if not targets:
         raise RuntimeError(
             "No camera bound to {0!r}. Either set the rendersettings' "
-            "'camera' relationship, or set CAMERA_PRIM in this script, "
-            "or set FOV_OVERRIDE to skip camera auto-derivation."
+            "'camera' relationship, or set CAMERA_PRIM in this script."
             .format(RENDER_SETTINGS_PRIM))
     cam_prim = stage.GetPrimAtPath(targets[0])
     if not cam_prim.IsValid():
@@ -82,14 +75,10 @@ def _apply(stage):
             "Prim {0!r} not found. Check RENDER_SETTINGS_PRIM."
             .format(RENDER_SETTINGS_PRIM))
 
-    # Resolve fov (either override or auto-derive from the render camera).
-    if FOV_OVERRIDE is not None:
-        fov_deg = float(FOV_OVERRIDE)
-        print("[PxrMaskProjection] Using FOV_OVERRIDE={0:.4f} deg"
-              .format(fov_deg))
-    else:
-        cam_prim = _resolve_camera_prim(stage, prim)
-        fov_deg  = _derive_fov_deg(cam_prim)
+    # Auto-derive fov from the render camera.
+    cam_prim = _resolve_camera_prim(stage, prim)
+    fov_deg  = _derive_fov_deg(cam_prim)
+    if DEBUG:
         print("[PxrMaskProjection] Derived fov={0:.4f} deg from {1}"
               .format(fov_deg, cam_prim.GetPath()))
 
@@ -109,7 +98,6 @@ def _apply(stage):
     set_attr(ns + "centerY",     Sdf.ValueTypeNames.Float,  CENTER_Y)
     set_attr(ns + "invert",      Sdf.ValueTypeNames.Int,    INVERT)
     set_attr(ns + "threshold",   Sdf.ValueTypeNames.Float,  THRESHOLD)
-    set_attr(ns + "softEdge",    Sdf.ValueTypeNames.Float,  SOFT_EDGE)
     set_attr(ns + "fov",         Sdf.ValueTypeNames.Float,  fov_deg)
     set_attr(ns + "debug",       Sdf.ValueTypeNames.Int,    DEBUG)
 
