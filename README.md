@@ -8,6 +8,8 @@ Tested with:
 - Houdini **21.0.559**
 - Windows 11 (MSVC v143) and Linux (g++)
 
+![img.png](img.png)
+
 ## How it works
 
 `PxrMaskProjection` is a full camera-replacement projection plugin
