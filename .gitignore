@@ -1,0 +1,31 @@
+# Third-party sources — fetched by fetch_thirdparty.sh / .bat.
+# Do not commit; see README.md.
+/thirdparty/*
+!/thirdparty/.gitkeep
+
+# Build artifacts
+*.dll
+*.so
+*.dylib
+*.obj
+*.o
+*.exp
+*.lib
+*.a
+*.pdb
+*.ilk
+
+# Editor / IDE
+.vs/
+.vscode/
+*.swp
+*.swo
+.idea/
+*.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code local state
+.claude/
