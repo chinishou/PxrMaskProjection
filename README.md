@@ -110,23 +110,6 @@ folders:
 | File | Destination | What it does |
 |------|-------------|--------------|
 | `PxrMaskProjection.dll` / `.so` | `$RMANTREE/lib/plugins/`      | The plugin code that RenderMan loads at render time. |
-| `PxrMaskProjection.args`        | `$RMANTREE/lib/plugins/Args/` | Sdr schema — registers the plugin in Solaris's **Projection dropdown** and exposes its parameters in the UI. Without this file the plugin won't show up in the menu. |
-
-
-Alternatively, keep the files in a custom folder and point
-`RMAN_RIXPLUGINPATH` (for the `.so` / `.dll`) and
-`RMAN_SHADERPATH` (for the `.args`) at it — see
-[RenderMan's docs](https://rmanwiki-26.pixar.com/space/REN26/19661213/Install).
-
-After deploying the files, **restart Houdini** — Sdr caches node
-definitions on launch, so a running session won't pick up a new
-`.args` file. If the entry still doesn't appear in the Projection
-dropdown, see [Troubleshooting](#plugin-doesnt-appear-in-the-projection-dropdown).
-
-> Note: you can also skip the dropdown entirely and set the
-> projection from a Python LOP using `set_projection.py` (see
-> below). The `.args` file is still required — hdPrman routes
-> USD attributes through Sdr to reach the plugin.
 
 ## Usage in Solaris
 
