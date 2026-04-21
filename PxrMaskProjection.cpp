@@ -712,25 +712,3 @@ RIX_PROJECTIONFACTORYDESTROY
 {
     delete static_cast<PxrMaskProjectionFactory const*>(factory);
 }
-
-
-// ============================================================
-// TROUBLESHOOTING (remaining possible issues)
-// ============================================================
-//
-// 1. "env.width" not found
-//    → grep -n "width\|height" $RMANTREE/include/RixProjection.h
-//    Might be screenWidth, imageWidth, or inside a sub-struct.
-//
-// 2. "direction.x" not a member
-//    → grep -A5 "direction" $RMANTREE/include/RixIntegrator.h
-//    Try: pCtx.rays[i].direction[0] = 0.0f;  (array style)
-//
-// 3. "EvalParam" for RtUString doesn't match
-//    → The string overload might write into an existing RtUString
-//    rather than taking a pointer. Check:
-//      grep "EvalParam.*UString" $RMANTREE/include/RixShading.h
-//
-// 4. "RenderBegin" signature mismatch
-//    → grep -A3 "RenderBegin" $RMANTREE/include/RixProjection.h
-//    Make sure const& matches exactly.
